@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+langchain
+langchain-experimental
+langchain-google-genai
+google-api-python-client
+openpyxl
+matplotlib
+tabulate
