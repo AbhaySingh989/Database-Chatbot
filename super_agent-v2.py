@@ -513,16 +513,42 @@ if st.sidebar.button("Clear Chat History"):
 st.sidebar.divider()
 st.sidebar.header("Status & Debug Info")
 st.sidebar.write(f"Agent Ready: {'✅ Yes' if st.session_state.agent_ready else '❌ No'}")
-if st.session_state.combined_df is not None:
-     st.sidebar.write("Combined DataFrame Info:")
-     st.sidebar.write(f"- Rows: {len(st.session_state.combined_df)}")
-     st.sidebar.write(f"- Columns: {len(st.session_state.combined_df.columns)}")
-     with st.sidebar.expander("Show Column Names"):
-        st.code(st.session_state.combined_df.columns.tolist())
-     with st.sidebar.expander("Show Head (First 5 Rows)"):
-        st.dataframe(st.session_state.combined_df.head())
+
+# Ensure 'pandas' is imported as 'pd' at the top of the script.
+if 'combined_df' in st.session_state and st.session_state.combined_df is not None:
+    st.sidebar.write("Combined DataFrame Info:")
+
+    actual_df_to_display = None
+    data_source_note = ""
+
+    if isinstance(st.session_state.combined_df, pd.DataFrame):
+        actual_df_to_display = st.session_state.combined_df
+    elif isinstance(st.session_state.combined_df, list):
+        if st.session_state.combined_df and \
+           isinstance(st.session_state.combined_df[0], dict) and \
+           'df' in st.session_state.combined_df[0] and \
+           isinstance(st.session_state.combined_df[0]['df'], pd.DataFrame):
+            actual_df_to_display = st.session_state.combined_df[0]['df']
+            data_source_note = "(Info for first DataFrame in list)"
+        else:
+            st.sidebar.warning("Data is an unexpected list format.")
+    else:
+        st.sidebar.warning("Data is not a recognized DataFrame.")
+
+    if actual_df_to_display is not None:
+        if data_source_note:
+            st.sidebar.caption(data_source_note)
+        st.sidebar.write(f"- Rows: {len(actual_df_to_display)}")
+        st.sidebar.write(f"- Columns: {len(actual_df_to_display.columns)}")
+        with st.sidebar.expander("Show Column Names"):
+            st.code(actual_df_to_display.columns.tolist())
+        with st.sidebar.expander("Show Head (First 5 Rows)"):
+            st.dataframe(actual_df_to_display.head())
+    # else: (If actual_df_to_display is None, warnings above have already been shown)
+    #    pass
 else:
-     st.sidebar.warning("No data loaded/combined yet.")
+    # This 'else' corresponds to the initial check for combined_df's existence
+    st.sidebar.warning("No data loaded/combined yet.")
 
 st.sidebar.divider()
 st.sidebar.subheader("Export Processed Data")
