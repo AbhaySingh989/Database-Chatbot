@@ -556,16 +556,12 @@ def format_chat_history_for_download(messages):
     for message in messages:
         role = message["role"].capitalize()
         content = message["content"]
-        history_str += f"{role}: {content}
-"
+        history_str += f"{role}: {content}\n"
         if message.get("plot_path") and os.path.exists(message["plot_path"]):
-            history_str += f"   (Plot generated and displayed: {message['plot_path']})
-"
+            history_str += f"   (Plot generated and displayed: {message['plot_path']})\n"
         elif message.get("plot_path"):
-            history_str += f"   (Plot path noted: {message['plot_path']}, but file may no longer be available)
-"
-        history_str += "
-" # Add a blank line between messages
+            history_str += f"   (Plot path noted: {message['plot_path']}, but file may no longer be available)\n"
+        history_str += "\n" # Add a blank line between messages
     return history_str
 
 if st.session_state.messages: # Only show button if there's history
