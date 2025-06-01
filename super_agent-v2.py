@@ -175,7 +175,7 @@ def create_agent(_df, _llm):
         2.  **ACCURATE RESULTS:** Base your final answer directly on the results of the executed code.
         3.  **MARKDOWN TABLES:** When the result is a DataFrame, format the **entire** result as a standard Markdown table in your final answer. If it's long (>15 rows), show the first 15 and state that it's truncated.
         4.  **PLOTTING:**
-            - If asked to plot: Generate the Python code using pandas plotting (`df.plot()`) or `matplotlib.pyplot`.
+            - If asked to plot: Generate the Python code using pandas plotting (`df.plot()`) or `matplotlib.pyplot`. **If the user specifies a plot type (e.g., 'scatter plot', 'bar chart', 'histogram'), try to use that specific type.**
             - **You MUST include `import matplotlib.pyplot as plt` in your plotting code.**
             - **Save the plot to the filename '{plot_filename}'.** Use exactly this filename. Use `plt.savefig('{plot_filename}')`.
             - **After saving, you MUST include `plt.close()` to close the plot.**
@@ -284,6 +284,48 @@ with st.expander("Step 2: Load and Combine Data"):
                  st.session_state.uploaded_files_processed = True # Mark as processed
                  st.write("Preview of Combined Data (first 5 rows):")
                  st.dataframe(st.session_state.combined_df.head())
+
+                 # --- Automated Data Profile ---
+                 st.subheader("Automated Data Profile:")
+                 st.write(f"Total Rows: {st.session_state.combined_df.shape[0]}")
+                 st.write(f"Total Columns: {st.session_state.combined_df.shape[1]}")
+
+                 st.write("Memory Usage:")
+                 with io.StringIO() as buffer:
+                     st.session_state.combined_df.info(buf=buffer)
+                     s = buffer.getvalue()
+                 st.text(s)
+
+                 st.write("Column Data Types:")
+                 st.dataframe(st.session_state.combined_df.dtypes.reset_index().rename(columns={'index': 'Column', 0: 'Data Type'}))
+
+                 st.write("Missing Values per Column:")
+                 missing_values = st.session_state.combined_df.isnull().sum().reset_index().rename(columns={'index': 'Column', 0: 'Missing Count'})
+                 missing_values = missing_values[missing_values['Missing Count'] > 0]
+                 if not missing_values.empty:
+                     st.dataframe(missing_values)
+                 else:
+                     st.write("No missing values found in any column.")
+
+                 st.write("Descriptive Statistics (Numerical Columns):")
+                 # Ensure import numpy as np if not already present
+                 try:
+                     st.dataframe(st.session_state.combined_df.describe(include=np.number))
+                 except NameError:
+                     import numpy as np # Attempt to import if not found
+                     st.dataframe(st.session_state.combined_df.describe(include=np.number))
+
+
+                 st.subheader("Unique Value Counts (Categorical/Object Columns)")
+                 # Select only object or category columns for nunique, to avoid issues with datetime etc.
+                 categorical_cols = st.session_state.combined_df.select_dtypes(include=['object', 'category']).columns
+                 if not categorical_cols.empty:
+                     unique_counts = st.session_state.combined_df[categorical_cols].nunique().reset_index().rename(columns={'index': 'Column', 0: 'Unique Values'})
+                     st.dataframe(unique_counts)
+                 else:
+                     st.write("No categorical/object columns found to display unique counts for.")
+                 # --- End Automated Data Profile ---
+
              else:
                  st.error("Failed to load or combine data.")
                  st.session_state.combined_df = None # Ensure it's None if failed
@@ -293,6 +335,46 @@ with st.expander("Step 2: Load and Combine Data"):
          st.success("Data is loaded and combined.")
          st.write("Preview of Combined Data (first 5 rows):")
          st.dataframe(st.session_state.combined_df.head())
+
+         # --- Automated Data Profile (also show if data is already loaded) ---
+         st.subheader("Automated Data Profile:")
+         st.write(f"Total Rows: {st.session_state.combined_df.shape[0]}")
+         st.write(f"Total Columns: {st.session_state.combined_df.shape[1]}")
+
+         st.write("Memory Usage:")
+         with io.StringIO() as buffer:
+             st.session_state.combined_df.info(buf=buffer)
+             s = buffer.getvalue()
+         st.text(s)
+
+         st.write("Column Data Types:")
+         st.dataframe(st.session_state.combined_df.dtypes.reset_index().rename(columns={'index': 'Column', 0: 'Data Type'}))
+
+         st.write("Missing Values per Column:")
+         missing_values = st.session_state.combined_df.isnull().sum().reset_index().rename(columns={'index': 'Column', 0: 'Missing Count'})
+         missing_values = missing_values[missing_values['Missing Count'] > 0]
+         if not missing_values.empty:
+             st.dataframe(missing_values)
+         else:
+             st.write("No missing values found in any column.")
+
+         st.write("Descriptive Statistics (Numerical Columns):")
+         # Ensure import numpy as np if not already present
+         try:
+             st.dataframe(st.session_state.combined_df.describe(include=np.number))
+         except NameError:
+             import numpy as np # Attempt to import if not found
+             st.dataframe(st.session_state.combined_df.describe(include=np.number))
+
+         st.subheader("Unique Value Counts (Categorical/Object Columns)")
+         # Select only object or category columns for nunique, to avoid issues with datetime etc.
+         categorical_cols = st.session_state.combined_df.select_dtypes(include=['object', 'category']).columns
+         if not categorical_cols.empty:
+             unique_counts = st.session_state.combined_df[categorical_cols].nunique().reset_index().rename(columns={'index': 'Column', 0: 'Unique Values'})
+             st.dataframe(unique_counts)
+         else:
+             st.write("No categorical/object columns found to display unique counts for.")
+         # --- End Automated Data Profile ---
     else:
          st.info("Upload files in Step 1 and click 'Load and Combine'.")
 
@@ -317,6 +399,29 @@ with st.expander("Step 3: Prepare AI Agent for Analysis"):
 # --- Step 4: Chat with Agent ---
 st.divider()
 st.subheader("Step 4: Chat with your Data Agent")
+# --- Quick Analyses Buttons ---
+st.markdown("---") # Optional separator
+st.markdown("**Quick Analyses:**")
+
+QUICK_ANALYSES = [
+    ("Descriptive Stats", "Show descriptive statistics for all numerical columns."),
+    ("Missing Values", "Show missing value counts for all columns."),
+    ("Correlation Matrix", "Calculate and show the correlation matrix for all numerical columns. Also, plot it as a heatmap if possible, saving it to the standard plot filename.")
+]
+
+# Ensure agent is ready before showing quick analysis buttons that require it
+if st.session_state.agent_ready:
+    num_quick_analyses = len(QUICK_ANALYSES)
+    cols = st.columns(num_quick_analyses)
+    for i, (label, prompt_text) in enumerate(QUICK_ANALYSES):
+        button_key = f"quick_analysis_{i}"
+        if cols[i].button(label, key=button_key, use_container_width=True):
+            st.session_state.current_prompt = prompt_text
+            st.rerun()
+else:
+    st.info("Prepare the agent in Step 3 to enable Quick Analyses.")
+
+st.markdown("---") # Optional separator
 
 # Display Chat History
 for message in st.session_state.messages:
@@ -445,6 +550,34 @@ if st.sidebar.button("Clear Chat History"):
         except Exception as e_rem: print(f"Error removing plot file on clear: {e_rem}")
     st.rerun()
 
+# --- Export Chat History ---
+def format_chat_history_for_download(messages):
+    history_str = ""
+    for message in messages:
+        role = message["role"].capitalize()
+        content = message["content"]
+        history_str += f"{role}: {content}
+"
+        if message.get("plot_path") and os.path.exists(message["plot_path"]):
+            history_str += f"   (Plot generated and displayed: {message['plot_path']})
+"
+        elif message.get("plot_path"):
+            history_str += f"   (Plot path noted: {message['plot_path']}, but file may no longer be available)
+"
+        history_str += "
+" # Add a blank line between messages
+    return history_str
+
+if st.session_state.messages: # Only show button if there's history
+    chat_export_data = format_chat_history_for_download(st.session_state.messages)
+    st.sidebar.download_button(
+        label="Download Chat History",
+        data=chat_export_data,
+        file_name="datasuper_chat_history.txt",
+        mime="text/plain"
+    )
+else:
+    st.sidebar.caption("No chat history to download yet.")
 st.sidebar.divider()
 st.sidebar.header("Status & Debug Info")
 st.sidebar.write(f"Agent Ready: {'✅ Yes' if st.session_state.agent_ready else '❌ No'}")
