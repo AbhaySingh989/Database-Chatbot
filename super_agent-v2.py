@@ -309,9 +309,43 @@ with st.expander("Step 2: Load and Combine Data"):
         if st.button("Load and Combine Uploaded Files"):
              combined_df_result = load_and_combine_files(uploaded_files)
              if combined_df_result is not None:
-                 st.session_state.combined_df = combined_df_result # This line assumes load_and_combine_files returns a single DF
-                 st.session_state.agent = None
-                 st.session_state.agent_ready = False
+                # This code block REPLACES the direct assignment st.session_state.combined_df = combined_df_result
+                if isinstance(combined_df_result, list):
+                    if not combined_df_result: # Empty list from loader
+                        st.warning("No data was loaded from the files.")
+                        st.session_state.combined_df = None
+                    elif len(combined_df_result) == 1 and \
+                         isinstance(combined_df_result[0], dict) and \
+                         'df' in combined_df_result[0] and \
+                         isinstance(combined_df_result[0]['df'], pd.DataFrame):
+                        # Single file processed by a list-returning loader
+                        st.session_state.combined_df = combined_df_result[0]['df']
+                    elif all(isinstance(item, dict) and 'df' in item and isinstance(item['df'], pd.DataFrame) for item in combined_df_result):
+                        # Multiple files processed by a list-returning loader, attempt concatenation.
+                        try:
+                            dfs_to_concat = [item['df'] for item in combined_df_result if item.get('df') is not None and not item['df'].empty]
+                            if dfs_to_concat:
+                                st.session_state.combined_df = pd.concat(dfs_to_concat, ignore_index=True)
+                                st.info(f"Multiple files were loaded and have been concatenated into a single DataFrame for analysis. Total rows: {len(st.session_state.combined_df)}")
+                            else:
+                                st.warning("No valid DataFrames found to concatenate from the loaded files.")
+                                st.session_state.combined_df = None
+                        except Exception as e:
+                            st.error(f"Error concatenating multiple DataFrames: {str(e)}")
+                            st.session_state.combined_df = None
+                    else:
+                        st.error("Loaded data is in an unexpected list format. Cannot prepare for agent analysis.")
+                        st.session_state.combined_df = None
+                elif isinstance(combined_df_result, pd.DataFrame):
+                    # This handles cases where load_and_combine_files might return a direct DataFrame (current behavior)
+                    st.session_state.combined_df = combined_df_result
+                else:
+                    # combined_df_result is not None here, but not a list or DataFrame
+                    st.error("Loaded data is not in a recognizable DataFrame or list format.")
+                    st.session_state.combined_df = None
+
+                st.session_state.agent = None
+                st.session_state.agent_ready = False
                  st.session_state.messages = []
                  st.session_state.uploaded_files_processed = True
                  st.write("Preview of Combined Data (first 5 rows):")
