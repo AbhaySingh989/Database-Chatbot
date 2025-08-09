@@ -204,7 +204,7 @@ Before you begin, ensure you have the following:
     1.  Ensure your virtual environment is still active (if you created one).
     2.  In your terminal or command prompt, while in the directory containing `super_agent-v2.py`, run the following command:
         ```bash
-        streamlit run super_agent-v2.py
+        python -m streamlit run super_agent.py
         ```
     3.  This will start the Streamlit application. It should automatically open in your default web browser (usually at an address like `http://localhost:8501`). If it doesn't, your terminal will display the local URL you can open manually.
 
