@@ -346,24 +346,24 @@ with st.expander("Step 2: Load and Combine Data"):
 
                 st.session_state.agent = None
                 st.session_state.agent_ready = False
-                 st.session_state.messages = []
-                 st.session_state.uploaded_files_processed = True
-                 st.write("Preview of Combined Data (first 5 rows):")
-                 if isinstance(st.session_state.combined_df, list):
-                     if st.session_state.combined_df and \
-                        isinstance(st.session_state.combined_df[0], dict) and \
-                        'df' in st.session_state.combined_df[0] and \
-                        isinstance(st.session_state.combined_df[0]['df'], pd.DataFrame):
-                         st.dataframe(st.session_state.combined_df[0]['df'].head())
-                         # Optionally, provide context if it's from a list:
-                         # st.caption("Displaying preview of the first DataFrame from the loaded list.")
-                     else:
-                         # Handle cases where it's a list but not in the expected format
-                         st.warning("Data loaded in an unexpected list format. Cannot display head preview here.")
-                 elif isinstance(st.session_state.combined_df, pd.DataFrame):
-                     st.dataframe(st.session_state.combined_df.head())
-                 else:
-                     st.warning("Combined data is not a recognizable DataFrame or list of DataFrames. Cannot display preview.")
+                st.session_state.messages = []
+                st.session_state.uploaded_files_processed = True
+                st.write("Preview of Combined Data (first 5 rows):")
+                if isinstance(st.session_state.combined_df, list):
+                    if st.session_state.combined_df and \
+                       isinstance(st.session_state.combined_df[0], dict) and \
+                       'df' in st.session_state.combined_df[0] and \
+                       isinstance(st.session_state.combined_df[0]['df'], pd.DataFrame):
+                        st.dataframe(st.session_state.combined_df[0]['df'].head())
+                        # Optionally, provide context if it's from a list:
+                        # st.caption("Displaying preview of the first DataFrame from the loaded list.")
+                    else:
+                        # Handle cases where it's a list but not in the expected format
+                        st.warning("Data loaded in an unexpected list format. Cannot display head preview here.")
+                elif isinstance(st.session_state.combined_df, pd.DataFrame):
+                    st.dataframe(st.session_state.combined_df.head())
+                else:
+                    st.warning("Combined data is not a recognizable DataFrame or list of DataFrames. Cannot display preview.")
              else:
                  st.error("Failed to load or combine data.")
                  st.session_state.combined_df = None
