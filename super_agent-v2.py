@@ -5,6 +5,7 @@ import re
 import time
 import traceback
 import io # For handling byte streams from uploads
+from itertools import combinations # For find_potential_common_columns
 
 # Langchain & Google specific imports
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -88,75 +89,77 @@ def get_llm(model_name, temperature):
 llm_agent_model = get_llm(model_name=AGENT_MODEL_NAME, temperature=0)
 llm_suggestion_model = get_llm(model_name=SUGGESTION_MODEL_NAME, temperature=0.7)
 
-# --- Data Loading and Combination ---
-@st.cache_data(show_spinner="Loading and combining files...")
+@st.cache_data(show_spinner="Loading files...") # Modified spinner message
 def load_and_combine_files(uploaded_files):
-    """Loads data from uploaded files (CSV, Excel), combines them, returns DataFrame or None."""
+    """
+    Loads data from uploaded files (CSV, Excel).
+    Returns a list of dictionaries, each containing 'name' and 'df', or None if no files.
+    """
     if not uploaded_files:
         return None
 
-    all_dfs = []
-    file_details = [] # To track which files were processed
+    loaded_dfs_info = []
+    file_details_summary = [] # For the summary table
 
     for file in uploaded_files:
         file_name = file.name
-        file_type = file.type
-        file_size = file.size
+        # file_type = file.type # Not strictly needed for the new logic but kept for now
+        # file_size = file.size # Not strictly needed for the new logic but kept for now
 
         try:
             df = None
-            # Make sure to reset the file pointer before reading
-            file.seek(0)
+            file.seek(0) # Reset file pointer
             if file_name.endswith('.csv'):
                 df = pd.read_csv(file)
-                file_details.append({"name": file_name, "type": "CSV", "rows": len(df)})
+                file_details_summary.append({"name": file_name, "type": "CSV", "rows": len(df)})
             elif file_name.endswith(('.xls', '.xlsx')):
-                # Make sure you installed 'openpyxl': pip install openpyxl
                 df = pd.read_excel(file, engine='openpyxl')
-                file_details.append({"name": file_name, "type": "Excel", "rows": len(df)})
-            # elif file_name.endswith('.pdf'):
-            #     # PDF processing is complex - requires libraries like PyPDF2, pdfplumber, etc.
-            #     # Placeholder - add actual PDF table extraction logic here if needed later
-            #     st.warning(f"PDF processing for '{file_name}' is not implemented in this version.")
-            #     file_details.append({"name": file_name, "type": "PDF", "status": "Skipped"})
+                file_details_summary.append({"name": file_name, "type": "Excel", "rows": len(df)})
             else:
                  st.warning(f"Unsupported file type: {file_name}. Skipping.")
-                 file_details.append({"name": file_name, "type": "Unsupported", "status": "Skipped"})
+                 file_details_summary.append({"name": file_name, "type": "Unsupported", "status": "Skipped"})
 
             if df is not None:
-                all_dfs.append(df)
+                loaded_dfs_info.append({'name': file_name, 'df': df})
 
         except Exception as e:
             st.error(f"Error reading file '{file_name}': {e}")
-            file_details.append({"name": file_name, "status": f"Error: {e}"})
-            # Decide if one error should stop the whole process or just skip the file
-            # return None # Option: Stop if any file fails
+            file_details_summary.append({"name": file_name, "status": f"Error: {e}"})
+            # Continue to try and load other files
 
     # Display summary of files processed
     st.subheader("File Loading Summary")
-    st.dataframe(pd.DataFrame(file_details))
+    st.dataframe(pd.DataFrame(file_details_summary))
 
-    if not all_dfs:
+    if not loaded_dfs_info:
         st.warning("No valid dataframes were loaded.")
         return None
 
-    # Attempt to combine the collected DataFrames
-    if len(all_dfs) == 1:
-        st.success("Loaded 1 file.")
-        return all_dfs[0]
-    else:
-        try:
-            # Use concat which handles slightly different columns by default (fills with NaN)
-            combined_df = pd.concat(all_dfs, ignore_index=True, sort=False)
-            st.success(f"Successfully combined {len(all_dfs)} file(s). Total rows: {len(combined_df)}")
-            # Optional: Display columns to check if combination makes sense
-            # st.write("Columns in combined data:", combined_df.columns.tolist())
-            return combined_df
-        except Exception as e:
-            st.error(f"Error combining DataFrames: {e}")
-            st.warning("Combining failed. This might happen if files have very different structures. Proceeding with only the first loaded DataFrame.")
-            # Fallback: return the first df if combination fails? Or return None?
-            return all_dfs[0] # Return first as fallback
+    return loaded_dfs_info
+
+# --- Function to find potential common columns ---
+def find_potential_common_columns(list_of_df_infos):
+    """
+    Finds columns with exact matching names between all unique pairs of DataFrames.
+    Input: list_of_df_infos (e.g., st.session_state.individual_dfs)
+    Output: Dictionary {('df_name1', 'df_name2'): ['common_col1', ...], ...}
+    """
+    if not list_of_df_infos or len(list_of_df_infos) < 2:
+        return {}
+
+    common_columns_candidates = {}
+    # from itertools import combinations # Already imported globally
+
+    for (info1, info2) in combinations(list_of_df_infos, 2):
+        df1_name = info1['name']
+        df1 = info1['df']
+        df2_name = info2['name']
+        df2 = info2['df']
+
+        common_cols = list(set(df1.columns) & set(df2.columns))
+        if common_cols:
+            common_columns_candidates[(df1_name, df2_name)] = common_cols
+    return common_columns_candidates
 
 # --- Agent Creation ---
 @st.cache_resource(show_spinner="Initializing Data Analyst Agent...")
@@ -168,22 +171,29 @@ def create_agent(_df, _llm):
     try:
         agent_instructions_prefix = """
         You are an expert data analyst working with a Pandas DataFrame named `df`.
-        Your goal is to answer questions accurately by executing Python code using the provided tools.
+        Your goal is to answer questions accurately and efficiently by executing Python code.
 
         **Core Requirements:**
         1.  **EXECUTE CODE:** For any request needing data calculation, filtering, aggregation, or statistics, you MUST generate and execute the relevant Python Pandas code. Do NOT provide answers without executing code.
         2.  **ACCURATE RESULTS:** Base your final answer directly on the results of the executed code.
         3.  **MARKDOWN TABLES:** When the result is a DataFrame, format the **entire** result as a standard Markdown table in your final answer. If it's long (>15 rows), show the first 15 and state that it's truncated.
         4.  **PLOTTING:**
-            - If asked to plot: Generate the Python code using pandas plotting (`df.plot()`) or `matplotlib.pyplot`.
-            - **You MUST include `import matplotlib.pyplot as plt` in your plotting code.**
-            - **Save the plot to the filename '{plot_filename}'.** Use exactly this filename. Use `plt.savefig('{plot_filename}')`.
-            - **After saving, you MUST include `plt.close()` to close the plot.**
-            - In your final text answer, simply confirm that the plot was generated and saved (e.g., "I have generated the requested plot and saved it."). Do not describe the plot in detail unless asked.
-        5.  **ERRORS:** If code execution fails, clearly state "Error executing code:" followed by the Python error message in your final answer. Do not make up results.
+            - If asked to plot: Generate Python code using `pandas.DataFrame.plot()` or `matplotlib.pyplot`. If the user specifies a plot type (e.g., 'scatter plot', 'bar chart', 'histogram'), try to use that specific type.
+            - **You MUST include `import matplotlib.pyplot as plt` in your plotting code block.**
+            - **Save the plot to the filename '{plot_filename}'.** Use exactly this filename and path. Use `plt.savefig('{plot_filename}')`.
+            - **After saving, you MUST include `plt.close()` to close the plot and free up memory.**
+            - In your final text answer, simply confirm plot generation and saving (e.g., "I have generated the requested plot."). Do not describe the plot unless asked.
+        5.  **CODE QUALITY & EFFICIENCY:**
+            - Write clean, efficient, and idiomatic Python Pandas code.
+            - Aim for correctness and completeness in your first attempt to minimize iterations.
+            - Use `pandas` for data manipulation and `numpy` for numerical operations effectively.
+        6.  **CONTEXTUAL AWARENESS:** If the user's current query seems to build upon previous interactions in this session, utilize the chat history to maintain context.
+        7.  **CONCISE COMMUNICATION:** Provide brief explanations for your actions. Be concise unless the user asks for more detail.
+        8.  **ERRORS:** If code execution fails, clearly state "Error executing code:" followed by the Python error message in your final answer. Do not make up results.
 
-        Begin! Remember to save plots to '{plot_filename}' and then call plt.close().
-        """.format(plot_filename=TEMP_PLOT_FILE) # Pass the filename
+        Remember to save plots to '{plot_filename}' and then call `plt.close()`.
+        Begin!
+        """.format(plot_filename=TEMP_PLOT_FILE)
 
         agent = create_pandas_dataframe_agent(
             llm=_llm,
@@ -224,6 +234,20 @@ def get_followup_suggestions(prompt, response, df_columns, _llm):
         """
         suggestion_response = _llm.invoke(suggestion_prompt)
         suggestions_text = suggestion_response.content
+
+        # Token estimation for suggestion call
+        if 'session_llm_calls' not in st.session_state: # Ensure init
+            st.session_state.session_llm_calls = 0
+        if 'session_estimated_tokens' not in st.session_state:
+            st.session_state.session_estimated_tokens = 0.0
+
+        st.session_state.session_llm_calls += 1
+        # `suggestion_prompt` is the input to the suggestion LLM
+        # `suggestions_text` is the LLM's string output
+        prompt_len = len(str(suggestion_prompt if suggestion_prompt is not None else ""))
+        response_len = len(str(suggestions_text if suggestions_text is not None else ""))
+        st.session_state.session_estimated_tokens += (prompt_len + response_len) / 4.0
+
         suggestions = []
         potential_suggestions = re.findall(r"^\s*\d+\.\s+(.*)", suggestions_text, re.MULTILINE)
         suggestions = [s.strip("? ").strip() + "?" for s in potential_suggestions[:3]]
@@ -250,12 +274,20 @@ if "combined_df" not in st.session_state:
     st.session_state.combined_df = None
 if "agent" not in st.session_state:
     st.session_state.agent = None
+if "individual_dfs" not in st.session_state: # New state for list of DF infos
+    st.session_state.individual_dfs = []
+if "potential_merge_candidates" not in st.session_state: # New state for merge candidates
+    st.session_state.potential_merge_candidates = {}
 if "agent_ready" not in st.session_state:
     st.session_state.agent_ready = False
 if "current_prompt" not in st.session_state:
      st.session_state.current_prompt = ""
 if "uploaded_files_processed" not in st.session_state: # Track if combine button was clicked for current uploads
     st.session_state.uploaded_files_processed = False
+if 'session_llm_calls' not in st.session_state:
+    st.session_state.session_llm_calls = 0
+if 'session_estimated_tokens' not in st.session_state:
+    st.session_state.session_estimated_tokens = 0.0
 
 
 # --- Workflow Steps ---
@@ -277,22 +309,76 @@ with st.expander("Step 2: Load and Combine Data"):
         if st.button("Load and Combine Uploaded Files"):
              combined_df_result = load_and_combine_files(uploaded_files)
              if combined_df_result is not None:
-                 st.session_state.combined_df = combined_df_result
-                 st.session_state.agent = None # Reset agent if data changes
-                 st.session_state.agent_ready = False
-                 st.session_state.messages = [] # Clear chat on new data
-                 st.session_state.uploaded_files_processed = True # Mark as processed
+                # This code block REPLACES the direct assignment st.session_state.combined_df = combined_df_result
+                if isinstance(combined_df_result, list):
+                    if not combined_df_result: # Empty list from loader
+                        st.warning("No data was loaded from the files.")
+                        st.session_state.combined_df = None
+                    elif len(combined_df_result) == 1 and \
+                         isinstance(combined_df_result[0], dict) and \
+                         'df' in combined_df_result[0] and \
+                         isinstance(combined_df_result[0]['df'], pd.DataFrame):
+                        # Single file processed by a list-returning loader
+                        st.session_state.combined_df = combined_df_result[0]['df']
+                    elif all(isinstance(item, dict) and 'df' in item and isinstance(item['df'], pd.DataFrame) for item in combined_df_result):
+                        # Multiple files processed by a list-returning loader, attempt concatenation.
+                        try:
+                            dfs_to_concat = [item['df'] for item in combined_df_result if item.get('df') is not None and not item['df'].empty]
+                            if dfs_to_concat:
+                                st.session_state.combined_df = pd.concat(dfs_to_concat, ignore_index=True)
+                                st.info(f"Multiple files were loaded and have been concatenated into a single DataFrame for analysis. Total rows: {len(st.session_state.combined_df)}")
+                            else:
+                                st.warning("No valid DataFrames found to concatenate from the loaded files.")
+                                st.session_state.combined_df = None
+                        except Exception as e:
+                            st.error(f"Error concatenating multiple DataFrames: {str(e)}")
+                            st.session_state.combined_df = None
+                    else:
+                        st.error("Loaded data is in an unexpected list format. Cannot prepare for agent analysis.")
+                        st.session_state.combined_df = None
+                elif isinstance(combined_df_result, pd.DataFrame):
+                    # This handles cases where load_and_combine_files might return a direct DataFrame (current behavior)
+                    st.session_state.combined_df = combined_df_result
+                else:
+                    # combined_df_result is not None here, but not a list or DataFrame
+                    st.error("Loaded data is not in a recognizable DataFrame or list format.")
+                    st.session_state.combined_df = None
+
+                st.session_state.agent = None
+                st.session_state.agent_ready = False
+                 st.session_state.messages = []
+                 st.session_state.uploaded_files_processed = True
                  st.write("Preview of Combined Data (first 5 rows):")
-                 st.dataframe(st.session_state.combined_df.head())
+                 if isinstance(st.session_state.combined_df, list):
+                     if st.session_state.combined_df and \
+                        isinstance(st.session_state.combined_df[0], dict) and \
+                        'df' in st.session_state.combined_df[0] and \
+                        isinstance(st.session_state.combined_df[0]['df'], pd.DataFrame):
+                         st.dataframe(st.session_state.combined_df[0]['df'].head())
+                         # Optionally, provide context if it's from a list:
+                         # st.caption("Displaying preview of the first DataFrame from the loaded list.")
+                     else:
+                         # Handle cases where it's a list but not in the expected format
+                         st.warning("Data loaded in an unexpected list format. Cannot display head preview here.")
+                 elif isinstance(st.session_state.combined_df, pd.DataFrame):
+                     st.dataframe(st.session_state.combined_df.head())
+                 else:
+                     st.warning("Combined data is not a recognizable DataFrame or list of DataFrames. Cannot display preview.")
              else:
                  st.error("Failed to load or combine data.")
-                 st.session_state.combined_df = None # Ensure it's None if failed
+                 st.session_state.combined_df = None
                  st.session_state.uploaded_files_processed = False
 
-    elif st.session_state.combined_df is not None:
+    elif st.session_state.combined_df is not None: # This is the block for when data is already loaded and is a DataFrame
          st.success("Data is loaded and combined.")
          st.write("Preview of Combined Data (first 5 rows):")
-         st.dataframe(st.session_state.combined_df.head())
+         # This part should be safe as combined_df is confirmed to be a DataFrame here by prior logic
+         if isinstance(st.session_state.combined_df, pd.DataFrame):
+             st.dataframe(st.session_state.combined_df.head())
+         else:
+             # This case should ideally not be reached if session state is managed correctly,
+             # but added for robustness if combined_df was somehow set to a non-DataFrame type.
+             st.warning("Previously loaded data is not in the expected DataFrame format. Cannot display preview.")
     else:
          st.info("Upload files in Step 1 and click 'Load and Combine'.")
 
@@ -322,7 +408,6 @@ st.subheader("Step 4: Chat with your Data Agent")
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        # Display plot if a path was stored AND the file exists
         if message.get("plot_path") and os.path.exists(message["plot_path"]):
              st.image(message["plot_path"])
         elif message.get("plot_path"):
@@ -332,18 +417,16 @@ for message in st.session_state.messages:
 # Handle Pending Prompt (from suggestion click)
 if st.session_state.current_prompt:
     prompt = st.session_state.current_prompt
-    st.session_state.current_prompt = "" # Clear it
+    st.session_state.current_prompt = ""
 else:
     prompt = st.chat_input("Ask the agent about the loaded data...")
 
 # Main Interaction Logic
 if prompt:
-    # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt, "plot_path": None})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Check if agent is ready
     if st.session_state.agent is None or not st.session_state.agent_ready:
         st.warning("⚠️ Agent is not ready. Please complete Step 3 first.")
         st.session_state.messages.append({
@@ -352,13 +435,10 @@ if prompt:
             "plot_path": None
         })
     else:
-        # Run agent
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             message_placeholder.markdown("🤔 Thinking and executing...")
-            plot_path_this_turn = None # Reset
-
-            # Clean up previous plot file BEFORE running agent
+            plot_path_this_turn = None
             if os.path.exists(TEMP_PLOT_FILE):
                 try:
                     os.remove(TEMP_PLOT_FILE)
@@ -367,94 +447,193 @@ if prompt:
                     print(f"Warning: Could not remove previous plot file: {e_rem}")
 
             try:
-                # === Run the Agent ===
                 print(f"\n>>> Running Agent with Input:\n{prompt}\n")
-                # Use invoke for potentially richer output if needed, run is simpler for text
-                # response = st.session_state.agent.invoke({"input": prompt}) # invoke returns dict
-                # final_answer = response.get("output", "Agent did not return 'output'.")
-
-                response = st.session_state.agent.run(prompt) # run returns string directly
+                response = st.session_state.agent.run(prompt)
                 final_answer = response
                 print(f"\n<<< Agent Raw Response:\n{final_answer}\n")
+                # Token estimation for agent call
+                if 'session_llm_calls' not in st.session_state: # Ensure init if somehow missed
+                    st.session_state.session_llm_calls = 0
+                if 'session_estimated_tokens' not in st.session_state:
+                    st.session_state.session_estimated_tokens = 0.0
+
+                st.session_state.session_llm_calls += 1
+                # `prompt` is the user's input to the agent
+                # `final_answer` is the agent's string output
+                prompt_len = len(str(prompt if prompt is not None else ""))
+                response_len = len(str(final_answer if final_answer is not None else ""))
+                st.session_state.session_estimated_tokens += (prompt_len + response_len) / 4.0
                 # =====================
 
-                # --- Check for Plot File AFTER Agent Run ---
-                time.sleep(0.5) # Give filesystem a moment
+                time.sleep(0.5)
                 if os.path.exists(TEMP_PLOT_FILE):
                     print(f"Confirmed plot file exists after agent run: {TEMP_PLOT_FILE}")
                     plot_path_this_turn = TEMP_PLOT_FILE
-                    message_placeholder.markdown(final_answer) # Display text first
-                    st.image(plot_path_this_turn) # Display plot image below
+                    message_placeholder.markdown(final_answer)
+                    st.image(plot_path_this_turn)
                 else:
                     print(f"Plot file NOT found after agent run at: {TEMP_PLOT_FILE}")
-                    message_placeholder.markdown(final_answer) # Display only text
+                    message_placeholder.markdown(final_answer)
 
-                # --- Generate Follow-up Suggestions ---
                 suggestions = []
                 if "error executing code" not in final_answer.lower() and st.session_state.combined_df is not None:
                     suggestions = get_followup_suggestions(
                         prompt, final_answer,
                         st.session_state.combined_df.columns.tolist(),
-                        llm_suggestion_model # Pass the suggestion LLM
+                        llm_suggestion_model
                     )
 
-                # Display suggestions if any
                 if suggestions:
                     st.markdown("---")
                     st.markdown("**Suggested follow-up questions:**")
                     cols = st.columns(len(suggestions))
                     for i, sugg in enumerate(suggestions):
-                        # Ensure unique keys for buttons within the loop and across reruns
                         button_key = f"suggestion_{len(st.session_state.messages)}_{i}"
                         if cols[i].button(sugg, key=button_key, use_container_width=True):
                             st.session_state.current_prompt = sugg
-                            st.rerun() # Rerun app immediately with the new prompt
-
+                            st.rerun()
             except Exception as e:
                 error_message = f"😞 Agent Execution Failed: {str(e)}"
                 print("\n--- Agent Execution/Display Traceback ---")
                 print(traceback.format_exc())
                 print("---------------------------------------")
-                st.error(error_message) # Show error in main area
+                st.error(error_message)
                 final_answer = error_message
                 suggestions = []
-                # Clean up plot file if error occurred after potential creation
                 if os.path.exists(TEMP_PLOT_FILE):
                      try: os.remove(TEMP_PLOT_FILE)
                      except Exception as e_rem_err: print(f"Error removing plot file after exception: {e_rem_err}")
 
-        # Append assistant's full response (text + plot path) to history
         st.session_state.messages.append({
             "role": "assistant",
             "content": final_answer,
             "plot_path": plot_path_this_turn
         })
-        # Need to rerun *if suggestions were NOT clicked* to clear the prompt input visually
-        # However, Streamlit handles input clearing automatically on enter usually.
-        # If a suggestion button WAS clicked, rerun() already happened.
-
 
 # --- Sidebar for Options/Debug ---
 st.sidebar.header("Options")
 if st.sidebar.button("Clear Chat History"):
     st.session_state.messages = []
-    st.session_state.current_prompt = "" # Clear pending prompt too
-    # Clean up plot file
+    st.session_state.current_prompt = ""
+    st.session_state.combined_df = None
+    st.session_state.agent = None # Crucial for agent re-initialization
+    st.session_state.agent_ready = False
+    st.session_state.uploaded_files_processed = False # Reset flag for Step 2 logic
+
+    # Variables from attempted merge refactoring (reset for cleanliness)
+    st.session_state.individual_dfs = []
+    st.session_state.potential_merge_candidates = {}
+    # If 'llm_merge_suggestions' was added to session_state, reset it too:
+    if 'llm_merge_suggestions' in st.session_state:
+       st.session_state.llm_merge_suggestions = None # Or {} depending on its typical type
+
+    if 'uploaded_file_names' in st.session_state: # Reset this as well
+        st.session_state.uploaded_file_names = []
+
+    # Reset token count variables
+    st.session_state.session_llm_calls = 0
+    st.session_state.session_estimated_tokens = 0.0
+
+    # Clean up plot file (existing logic)
     if os.path.exists(TEMP_PLOT_FILE):
-        try: os.remove(TEMP_PLOT_FILE)
-        except Exception as e_rem: print(f"Error removing plot file on clear: {e_rem}")
-    st.rerun()
+       try:
+           os.remove(TEMP_PLOT_FILE)
+           print(f"Cleared plot file on session reset: {TEMP_PLOT_FILE}")
+       except Exception as e_rem:
+           print(f"Warning: Could not remove plot file on session reset: {e_rem}")
+
+    st.rerun() # Existing logic
 
 st.sidebar.divider()
 st.sidebar.header("Status & Debug Info")
 st.sidebar.write(f"Agent Ready: {'✅ Yes' if st.session_state.agent_ready else '❌ No'}")
-if st.session_state.combined_df is not None:
-     st.sidebar.write("Combined DataFrame Info:")
-     st.sidebar.write(f"- Rows: {len(st.session_state.combined_df)}")
-     st.sidebar.write(f"- Columns: {len(st.session_state.combined_df.columns)}")
-     with st.sidebar.expander("Show Column Names"):
-        st.code(st.session_state.combined_df.columns.tolist())
-     with st.sidebar.expander("Show Head (First 5 Rows)"):
-        st.dataframe(st.session_state.combined_df.head())
+
+# Ensure 'pandas' is imported as 'pd' at the top of the script.
+if 'combined_df' in st.session_state and st.session_state.combined_df is not None:
+    st.sidebar.write("Combined DataFrame Info:")
+
+    actual_df_to_display = None
+    data_source_note = ""
+
+    if isinstance(st.session_state.combined_df, pd.DataFrame):
+        actual_df_to_display = st.session_state.combined_df
+    elif isinstance(st.session_state.combined_df, list):
+        if st.session_state.combined_df and \
+           isinstance(st.session_state.combined_df[0], dict) and \
+           'df' in st.session_state.combined_df[0] and \
+           isinstance(st.session_state.combined_df[0]['df'], pd.DataFrame):
+            actual_df_to_display = st.session_state.combined_df[0]['df']
+            data_source_note = "(Info for first DataFrame in list)"
+        else:
+            st.sidebar.warning("Data is an unexpected list format.")
+    else:
+        st.sidebar.warning("Data is not a recognized DataFrame.")
+
+    if actual_df_to_display is not None:
+        if data_source_note:
+            st.sidebar.caption(data_source_note)
+        st.sidebar.write(f"- Rows: {len(actual_df_to_display)}")
+        st.sidebar.write(f"- Columns: {len(actual_df_to_display.columns)}")
+        with st.sidebar.expander("Show Column Names"):
+            st.code(actual_df_to_display.columns.tolist())
+        with st.sidebar.expander("Show Head (First 5 Rows)"):
+            st.dataframe(actual_df_to_display.head())
+    # else: (If actual_df_to_display is None, warnings above have already been shown)
+    #    pass
 else:
-     st.sidebar.warning("No data loaded/combined yet.")
+    # This 'else' corresponds to the initial check for combined_df's existence
+    st.sidebar.warning("No data loaded/combined yet.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Export Processed Data")
+
+if 'combined_df' in st.session_state and isinstance(st.session_state.combined_df, pd.DataFrame) and not st.session_state.combined_df.empty:
+    try:
+        csv_data = st.session_state.combined_df.to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button(
+            label="Download Data as CSV",
+            data=csv_data,
+            file_name="datasuper_export.csv",
+            mime="text/csv",
+            key="export_sidebar_csv_btn"
+        )
+    except Exception as e:
+        st.sidebar.error(f"CSV Export Error: {e}")
+
+    try:
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+            st.session_state.combined_df.to_excel(writer, index=False, sheet_name='Sheet1')
+        excel_data = output_excel.getvalue()
+        st.sidebar.download_button(
+            label="Download Data as Excel",
+            data=excel_data,
+            file_name="datasuper_export.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="export_sidebar_excel_btn"
+        )
+    except Exception as e:
+        st.sidebar.error(f"Excel Export Error: {e}")
+
+    try:
+        json_data = st.session_state.combined_df.to_json(orient='records', indent=4).encode('utf-8')
+        st.sidebar.download_button(
+            label="Download Data as JSON",
+            data=json_data,
+            file_name="datasuper_export.json",
+            mime="application/json",
+            key="export_sidebar_json_btn"
+        )
+    except Exception as e:
+        st.sidebar.error(f"JSON Export Error: {e}")
+else:
+    st.sidebar.caption("Load data (Step 2) to enable export options.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Session Usage Stats")
+# Ensure keys exist before accessing
+llm_calls = st.session_state.get('session_llm_calls', 0)
+estimated_tokens = st.session_state.get('session_estimated_tokens', 0.0)
+st.sidebar.write(f"LLM Calls This Session: {llm_calls}")
+st.sidebar.write(f"Estimated Tokens This Session: {int(estimated_tokens)}")
+st.sidebar.caption("Token count is a rough estimate (prompt/response length).")
