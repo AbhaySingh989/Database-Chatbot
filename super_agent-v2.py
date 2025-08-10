@@ -11,6 +11,7 @@ from itertools import combinations # For find_potential_common_columns
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain.agents.agent_types import AgentType
+from agent_utils import get_llm as util_get_llm, create_agent as util_create_agent
 
 # Plotting specific setup
 import matplotlib
@@ -40,27 +41,6 @@ else:
     pass
 
 # --- LLM Initialization ---
-# Cache LLM instances using Streamlit's resource caching
-@st.cache_resource
-def get_llm(model_name, temperature):
-    """Creates and returns a cached ChatGoogleGenerativeAI instance."""
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temperature,
-            convert_system_message_to_human=True
-        )
-        print(f"LLM '{model_name}' initialized.")
-        return llm
-    except Exception as e:
-        st.error(f"🚨 Failed to initialize LLM '{model_name}': {e}")
-        print(f"--- LLM Init Traceback ({model_name}) ---")
-        print(traceback.format_exc())
-        print("-----------------------------------------")
-        st.stop() # Stop the app if LLM fails
-
-# Get the LLM instances (will be created only once)
-# --- LLM Initialization ---
 # Define model names explicitly
 AGENT_MODEL_NAME = "gemini-2.0-flash"
 SUGGESTION_MODEL_NAME = "gemini-2.0-flash" # Or choose a different one if desired
@@ -70,13 +50,7 @@ SUGGESTION_MODEL_NAME = "gemini-2.0-flash" # Or choose a different one if desire
 def get_llm(model_name, temperature):
     """Creates and returns a cached ChatGoogleGenerativeAI instance."""
     try:
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temperature,
-            convert_system_message_to_human=True
-        )
-        print(f"LLM '{model_name}' initialized.")
-        return llm
+        return util_get_llm(model_name, temperature)
     except Exception as e:
         st.error(f"🚨 Failed to initialize LLM '{model_name}': {e}")
         print(f"--- LLM Init Traceback ({model_name}) ---")
@@ -169,45 +143,7 @@ def create_agent(_df, _llm):
         st.error("🚨 Cannot create agent: DataFrame or LLM is missing.")
         return None
     try:
-        agent_instructions_prefix = """
-        You are an expert data analyst working with a Pandas DataFrame named `df`.
-        Your goal is to answer questions accurately and efficiently by executing Python code.
-
-        **Core Requirements:**
-        1.  **EXECUTE CODE:** For any request needing data calculation, filtering, aggregation, or statistics, you MUST generate and execute the relevant Python Pandas code. Do NOT provide answers without executing code.
-        2.  **ACCURATE RESULTS:** Base your final answer directly on the results of the executed code.
-        3.  **MARKDOWN TABLES:** When the result is a DataFrame, format the **entire** result as a standard Markdown table in your final answer. If it's long (>15 rows), show the first 15 and state that it's truncated.
-        4.  **PLOTTING:**
-            - If asked to plot: Generate Python code using `pandas.DataFrame.plot()` or `matplotlib.pyplot`. If the user specifies a plot type (e.g., 'scatter plot', 'bar chart', 'histogram'), try to use that specific type.
-            - **You MUST include `import matplotlib.pyplot as plt` in your plotting code block.**
-            - **Save the plot to the filename '{plot_filename}'.** Use exactly this filename and path. Use `plt.savefig('{plot_filename}')`.
-            - **After saving, you MUST include `plt.close()` to close the plot and free up memory.**
-            - In your final text answer, simply confirm plot generation and saving (e.g., "I have generated the requested plot."). Do not describe the plot unless asked.
-        5.  **CODE QUALITY & EFFICIENCY:**
-            - Write clean, efficient, and idiomatic Python Pandas code.
-            - Aim for correctness and completeness in your first attempt to minimize iterations.
-            - Use `pandas` for data manipulation and `numpy` for numerical operations effectively.
-        6.  **CONTEXTUAL AWARENESS:** If the user's current query seems to build upon previous interactions in this session, utilize the chat history to maintain context.
-        7.  **CONCISE COMMUNICATION:** Provide brief explanations for your actions. Be concise unless the user asks for more detail.
-        8.  **ERRORS:** If code execution fails, clearly state "Error executing code:" followed by the Python error message in your final answer. Do not make up results.
-
-        Remember to save plots to '{plot_filename}' and then call `plt.close()`.
-        Begin!
-        """.format(plot_filename=TEMP_PLOT_FILE)
-
-        agent = create_pandas_dataframe_agent(
-            llm=_llm,
-            df=_df,
-            prefix=agent_instructions_prefix,
-            verbose=True, # Set to False for cleaner Streamlit output, True for terminal debugging
-            agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-            allow_dangerous_code=True,
-            handle_parsing_errors=True,
-            agent_executor_kwargs={'handle_parsing_errors': True},
-        )
-        print(f"Pandas DataFrame Agent created successfully. Target plot filename: {TEMP_PLOT_FILE}")
-        return agent
-
+        return util_create_agent(_df, _llm)
     except Exception as e:
         st.error(f"🚨 Agent Creation Failed: {e}")
         print("--- Agent Creation Traceback ---")
@@ -448,8 +384,8 @@ if prompt:
 
             try:
                 print(f"\n>>> Running Agent with Input:\n{prompt}\n")
-                response = st.session_state.agent.run(prompt)
-                final_answer = response
+                response = st.session_state.agent.invoke({"input": f"{prompt}"})
+                final_answer = response.get("output") if isinstance(response, dict) else response
                 print(f"\n<<< Agent Raw Response:\n{final_answer}\n")
                 # Token estimation for agent call
                 if 'session_llm_calls' not in st.session_state: # Ensure init if somehow missed
