@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Virtual environment
+datasuper_env/
+
+# Environment variables
+.env
+
+# Streamlit specific
+.streamlit/
+
+# Temporary files
+temp_plots/
+*.tmp
+*.log
+
+# IDE specific
+.vscode/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Kiro files
+.kiro/
