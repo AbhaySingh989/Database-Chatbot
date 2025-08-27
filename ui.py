@@ -321,7 +321,7 @@ def main_ui():
 
     if st.session_state.agent_ready and st.session_state.combined_df is not None:
         from data_manager import generate_profile_report
-        from ydata_profiling import st_profile_report
+        from streamlit_ydata_profiling import st_profile_report
 
         from agent_handler import generate_dashboard_definition
         tab_chat, tab_profile, tab_dashboard = st.tabs(["💬 Chat with Agent", "📊 View Data Profile", "📈 Dashboard"])

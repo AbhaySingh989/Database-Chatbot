@@ -9,6 +9,7 @@ datasuper_env/
 
 # Environment variables
 .env
+venv/
 
 # Streamlit specific
 .streamlit/
