@@ -9,3 +9,10 @@ openpyxl
 matplotlib
 tabulate
 python-dotenv
+pytest
+pytest-mock
+psycopg2-binary
+google-cloud-bigquery
+snowflake-connector-python
+ydata-profiling
+streamlit-elements

@@ -623,3 +623,34 @@ class DataManager:
         self.data_sources.clear()
         self.source_handlers.clear()
         self.active_source_id = None
+
+
+def generate_profile_report(df: pd.DataFrame, title: str = "Data Profile Report"):
+    """
+    Generates a data profile report using ydata-profiling.
+
+    Args:
+        df: The DataFrame to profile.
+        title: The title for the profile report.
+
+    Returns:
+        A ydata_profiling.ProfileReport object.
+    """
+    from ydata_profiling import ProfileReport
+
+    if df is None or df.empty:
+        return None
+
+    try:
+        profile = ProfileReport(
+            df,
+            title=title,
+            minimal=True,  # Use minimal mode for performance in a web app
+            explorative=True,
+            dark_mode=True,
+            orange_mode=True,
+        )
+        return profile
+    except Exception as e:
+        print(f"Error generating profile report: {e}")
+        return None
