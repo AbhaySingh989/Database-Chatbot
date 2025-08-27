@@ -1,4 +1,6 @@
 import traceback
+import re
+import json
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain.prompts import PromptTemplate
 from typing import Dict, Any, Optional, List
@@ -171,38 +173,7 @@ def get_database_suggestions(metadata: Dict[str, Any]) -> List[str]:
     if metadata.get('source_type') != 'database':
         return suggestions
     
-    # Basic analysis suggestions
-    suggestions.extend([
-        "Show me a summary of the data structure and key statistics",
-        "What are the data quality issues I should be aware of?",
-        "Create visualizations to explore the main patterns in this data"
-    ])
-    
-    # Foreign key relationship suggestions
-    if 'foreign_keys' in metadata and metadata['foreign_keys']:
-        suggestions.extend([
-            "Explain the relationships between this table and other tables",
-            "What insights can we gain from the foreign key relationships?",
-            "Are there any data integrity issues with the foreign key references?"
-        ])
-    
-    # Column-specific suggestions based on data types
-    if 'column_types' in metadata:
-        numeric_cols = [col for col, dtype in metadata['column_types'].items() 
-                       if 'INT' in dtype.upper() or 'REAL' in dtype.upper() or 'NUMERIC' in dtype.upper()]
-        text_cols = [col for col, dtype in metadata['column_types'].items() 
-                    if 'TEXT' in dtype.upper() or 'VARCHAR' in dtype.upper()]
-        date_cols = [col for col, dtype in metadata['column_types'].items() 
-                    if 'DATE' in dtype.upper() or 'TIME' in dtype.upper()]
-        
-        if numeric_cols:
-            suggestions.append(f"Analyze the distribution and correlations of numeric columns: {', '.join(numeric_cols[:3])}")
-        
-        if text_cols:
-            suggestions.append(f"Explore the categorical data in text columns: {', '.join(text_cols[:3])}")
-        
-        if date_cols:
-            suggestions.append(f"Analyze trends over time using date columns: {', '.join(date_cols[:2])}")
+    # Prioritize the most specific suggestions first.
     
     # Table-specific suggestions
     if 'table_name' in metadata:
@@ -213,8 +184,115 @@ def get_database_suggestions(metadata: Dict[str, Any]) -> List[str]:
             suggestions.append("Analyze transaction patterns and trends over time")
         elif 'product' in table_name or 'item' in table_name:
             suggestions.append("Explore product performance and characteristics")
-    
+
+    # Foreign key relationship suggestions
+    if 'foreign_keys' in metadata and metadata['foreign_keys']:
+        suggestions.extend([
+            "Explain the relationships between this table and other tables",
+            "What insights can we gain from the foreign key relationships?",
+        ])
+
+    # Column-specific suggestions based on data types
+    if 'column_types' in metadata:
+        numeric_cols = [col for col, dtype in metadata['column_types'].items()
+                       if 'INT' in dtype.upper() or 'REAL' in dtype.upper() or 'NUMERIC' in dtype.upper()]
+        text_cols = [col for col, dtype in metadata['column_types'].items()
+                    if 'TEXT' in dtype.upper() or 'VARCHAR' in dtype.upper()]
+        
+        if numeric_cols:
+            suggestions.append(f"Analyze the distribution and correlations of numeric columns: {', '.join(numeric_cols[:3])}")
+        
+        if text_cols:
+            suggestions.append(f"Explore the categorical data in text columns: {', '.join(text_cols[:3])}")
+
+    # Basic analysis suggestions (add them last as they are most generic)
+    if len(suggestions) < 6:
+        suggestions.extend([
+            "Show me a summary of the data structure and key statistics",
+            "What are the data quality issues I should be aware of?",
+            "Create visualizations to explore the main patterns in this data"
+        ])
+
     return suggestions[:6]  # Limit to 6 suggestions
+
+
+def get_proactive_suggestions(metadata: Dict[str, Any], llm) -> List[str]:
+    """
+    Uses an LLM to generate proactive analytical questions based on the data schema.
+    """
+    if not llm or not metadata or 'columns' not in metadata:
+        return []
+
+    columns_str = ", ".join(metadata.get('columns', []))
+    prompt = f"""
+    Based on the following table schema with columns: [{columns_str}],
+    generate 3 to 5 insightful analytical questions a business analyst might ask.
+    The questions should be concise and directly answerable from the data.
+    Return ONLY the questions as a numbered list, each on a new line.
+
+    Example:
+    1. What is the trend of sales over time?
+    2. Which product category has the highest revenue?
+    """
+
+    try:
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, 'content') else response
+        
+        # Parse the numbered list response
+        suggestions = re.findall(r"^\s*\d+\.\s+(.*)", content, re.MULTILINE)
+        return [s.strip() for s in suggestions]
+    except Exception as e:
+        print(f"Error generating proactive suggestions: {e}")
+        return []
+
+
+def generate_dashboard_definition(metadata: Dict[str, Any], llm) -> List[Dict]:
+    """
+    Uses an LLM to generate a dashboard definition from the data schema.
+    """
+    if not llm or not metadata or 'columns' not in metadata:
+        return []
+
+    columns_str = ", ".join(metadata.get('columns', []))
+    prompt = f"""
+    You are a data analyst creating a dashboard definition in JSON format for a 12-column grid.
+    Based on the table schema with columns: [{columns_str}], define a dashboard.
+    
+    Choose the best chart types from this list: ['metric', 'bar_chart', 'line_chart', 'table'].
+    For each chart, you MUST define a grid layout with 'x', 'y', 'w', and 'h' integer properties.
+    'x' is the horizontal position (0-11). 'y' is the vertical position. 'w' is width, 'h' is height.
+    - 'metric': For KPIs. Should be small (e.g., w=3, h=1). Requires 'column' and 'expression' ('SUM', 'AVERAGE', 'COUNT').
+    - 'bar_chart': For categories. Requires 'x' and 'y' columns.
+    - 'line_chart': For trends. Requires 'x' and 'y' columns.
+    - 'table': For raw data. Requires a list of 'columns'.
+    
+    Return ONLY a valid JSON object which is a list of chart definitions. Do not include any explanation.
+
+    Example JSON response:
+    [
+      {{
+        "type": "metric", "label": "Total Sales", "column": "sales", "expression": "SUM",
+        "x": 0, "y": 0, "w": 3, "h": 1
+      }},
+      {{
+        "type": "bar_chart", "label": "Sales by Region", "x": "region", "y": "sales",
+        "x": 3, "y": 0, "w": 9, "h": 2
+      }}
+    ]
+    """
+
+    try:
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, 'content') else response
+        # Clean the response to extract only the JSON part
+        json_str = re.search(r'\[.*\]', content, re.DOTALL)
+        if json_str:
+            return json.loads(json_str.group(0))
+        return []
+    except (json.JSONDecodeError, AttributeError) as e:
+        print(f"Error parsing dashboard definition from LLM: {e}")
+        return []
 
 
 def create_context_aware_followup_prompt(original_prompt: str, response: str, 

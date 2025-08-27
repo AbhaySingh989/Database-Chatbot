@@ -1,13 +1,14 @@
 """
-SQLite Database Handler for DataSuperAgent
+Database Handlers for DataSuperAgent
 
-This module provides SQLite database connection management, schema exploration,
-and query execution capabilities for the DataSuperAgent application.
+This module provides handlers for various database systems, including a base
+abstract class and a concrete implementation for SQLite.
 """
 
 import sqlite3
 import os
 import datetime
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
@@ -59,7 +60,41 @@ class QueryResult:
             self.metadata = {}
 
 
-class SQLiteHandler:
+class Database(ABC):
+    """Abstract base class for database handlers."""
+
+    @abstractmethod
+    def connect(self, **kwargs) -> bool:
+        """Establish a connection to the database."""
+        pass
+
+    @abstractmethod
+    def disconnect(self):
+        """Close the database connection."""
+        pass
+
+    @abstractmethod
+    def get_table_names(self) -> List[str]:
+        """Get a list of all table names in the database."""
+        pass
+
+    @abstractmethod
+    def get_table_info(self, table_name: str) -> TableInfo:
+        """Get comprehensive information about a specific table."""
+        pass
+
+    @abstractmethod
+    def execute_query(self, query: str, params: tuple = None) -> QueryResult:
+        """Execute a SQL query and return the results."""
+        pass
+
+    @abstractmethod
+    def get_tables(self) -> List[TableInfo]:
+        """Get comprehensive information about all tables in the database."""
+        pass
+
+
+class SQLiteHandler(Database):
     """
     SQLite database handler for connection management and query execution
     """
@@ -93,16 +128,10 @@ class SQLiteHandler:
         except Exception as e:
             return False, f"Database validation failed: {str(e)}"
     
-    def connect(self, db_path: str, password: str = None) -> bool:
+    def connect(self, db_path: str, **kwargs) -> bool:
         """
-        Establish connection to SQLite database with connection pooling
-        
-        Args:
-            db_path: Path to the SQLite database file
-            password: Optional password for encrypted databases
-            
-        Returns:
-            True if connection successful, False otherwise
+        Establish connection to SQLite database with connection pooling.
+        The `db_path` is the primary connection argument.
         """
         try:
             # Validate database file first
@@ -519,3 +548,215 @@ class SQLiteHandler:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensure connection is closed"""
         self.disconnect()
+
+
+class PostgreSQLHandler(Database):
+    """
+    PostgreSQL database handler for connection management and query execution.
+    """
+    def __init__(self):
+        self.connection = None
+        self.is_connected = False
+        self.connection_details = {}
+
+    def connect(self, **kwargs) -> bool:
+        """
+        Establish connection to PostgreSQL database.
+        Expects: dbname, user, password, host, port.
+        """
+        import psycopg2
+        self.connection_details = kwargs
+        try:
+            self.connection = psycopg2.connect(**self.connection_details)
+            self.is_connected = True
+            return True
+        except psycopg2.Error as e:
+            self.is_connected = False
+            self.connection = None
+            raise ConnectionError(f"Failed to connect to PostgreSQL: {e}")
+
+    def disconnect(self):
+        """Close the PostgreSQL database connection."""
+        if self.connection:
+            self.connection.close()
+        self.is_connected = False
+        self.connection = None
+
+    def get_table_names(self) -> List[str]:
+        """Get a list of all table names in the current schema."""
+        if not self.is_connected:
+            raise ConnectionError("No active database connection")
+
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                ORDER BY table_name;
+            """)
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_table_info(self, table_name: str) -> TableInfo:
+        """Get comprehensive information about a specific table."""
+        if not self.is_connected:
+            raise ConnectionError("No active database connection")
+
+        with self.connection.cursor() as cursor:
+            # Get row count
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name};")
+            row_count = cursor.fetchone()[0]
+
+            # Get column info
+            cursor.execute("""
+                SELECT column_name, data_type, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_name = %s
+                ORDER BY ordinal_position;
+            """, (table_name,))
+
+            columns = []
+            for row in cursor.fetchall():
+                # Note: Getting primary key info would require a more complex query joining constraints.
+                # This is a simplification for now.
+                columns.append(ColumnInfo(
+                    name=row[0],
+                    data_type=row[1],
+                    nullable=(row[2] == 'YES'),
+                    primary_key=False, # Simplification
+                    default_value=row[3]
+                ))
+
+            return TableInfo(
+                name=table_name,
+                row_count=row_count,
+                columns=columns
+            )
+
+    def execute_query(self, query: str, params: tuple = None) -> QueryResult:
+        """Execute a SQL query and return the results."""
+        if not self.is_connected:
+            raise ConnectionError("No active database connection")
+
+        import time
+        start_time = time.time()
+
+        # Security validation should be done before calling this
+        df = pd.read_sql_query(query, self.connection, params=params)
+
+        execution_time = time.time() - start_time
+
+        return QueryResult(
+            dataframe=df,
+            query=query,
+            execution_time=execution_time,
+            row_count=len(df),
+            columns=df.columns.tolist()
+        )
+
+    def get_tables(self) -> List[TableInfo]:
+        """Get comprehensive information about all tables in the database."""
+        table_names = self.get_table_names()
+        return [self.get_table_info(name) for name in table_names]
+
+
+class BigQueryHandler(Database):
+    """Handler for Google BigQuery."""
+    def __init__(self):
+        self.client = None
+        self.is_connected = False
+
+    def connect(self, service_account_json_path: str, **kwargs) -> bool:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+        try:
+            credentials = service_account.Credentials.from_service_account_file(service_account_json_path)
+            self.client = bigquery.Client(credentials=credentials, project=credentials.project_id)
+            self.is_connected = True
+            return True
+        except Exception as e:
+            self.is_connected = False
+            raise ConnectionError(f"Failed to connect to BigQuery: {e}")
+
+    def disconnect(self):
+        self.client = None
+        self.is_connected = False
+
+    def get_table_names(self) -> List[str]:
+        if not self.is_connected:
+            raise ConnectionError("No active BigQuery connection")
+        tables = self.client.list_tables(self.client.project)
+        return [table.table_id for table in tables]
+
+    def get_table_info(self, table_name: str) -> TableInfo:
+        if not self.is_connected:
+            raise ConnectionError("No active BigQuery connection")
+        table_ref = self.client.get_table(table_name)
+        columns = [ColumnInfo(name=schema.name, data_type=schema.field_type, nullable=schema.is_nullable, primary_key=False) for schema in table_ref.schema]
+        return TableInfo(name=table_name, row_count=table_ref.num_rows, columns=columns)
+
+    def execute_query(self, query: str, params: tuple = None) -> QueryResult:
+        if not self.is_connected:
+            raise ConnectionError("No active BigQuery connection")
+        import time
+        start_time = time.time()
+        df = self.client.query(query).to_dataframe()
+        execution_time = time.time() - start_time
+        return QueryResult(dataframe=df, query=query, execution_time=execution_time, row_count=len(df), columns=df.columns.tolist())
+
+    def get_tables(self) -> List[TableInfo]:
+        table_names = self.get_table_names()
+        return [self.get_table_info(name) for name in table_names]
+
+
+class SnowflakeHandler(Database):
+    """Handler for Snowflake."""
+    def __init__(self):
+        self.connection = None
+        self.is_connected = False
+
+    def connect(self, **kwargs) -> bool:
+        import snowflake.connector
+        try:
+            self.connection = snowflake.connector.connect(**kwargs)
+            self.is_connected = True
+            return True
+        except snowflake.connector.Error as e:
+            self.is_connected = False
+            raise ConnectionError(f"Failed to connect to Snowflake: {e}")
+
+    def disconnect(self):
+        if self.connection:
+            self.connection.close()
+        self.is_connected = False
+
+    def get_table_names(self) -> List[str]:
+        if not self.is_connected:
+            raise ConnectionError("No active Snowflake connection")
+        with self.connection.cursor() as cursor:
+            cursor.execute("SHOW TABLES")
+            return [row[1] for row in cursor.fetchall()]
+
+    def get_table_info(self, table_name: str) -> TableInfo:
+        if not self.is_connected:
+            raise ConnectionError("No active Snowflake connection")
+        # Snowflake-specific query to get schema and row count
+        # This is a simplified version. A real implementation would be more robust.
+        with self.connection.cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            row_count = cursor.fetchone()[0]
+            cursor.execute(f"DESCRIBE TABLE {table_name}")
+            columns = [ColumnInfo(name=row[0], data_type=row[1], nullable=(row[2] == 'Y'), primary_key=(row[3] == 'Y')) for row in cursor.fetchall()]
+            return TableInfo(name=table_name, row_count=row_count, columns=columns)
+
+    def execute_query(self, query: str, params: tuple = None) -> QueryResult:
+        if not self.is_connected:
+            raise ConnectionError("No active Snowflake connection")
+        import time
+        start_time = time.time()
+        # Note: pandas.read_sql might need the snowflake-sqlalchemy adapter for full functionality
+        df = pd.read_sql(query, self.connection)
+        execution_time = time.time() - start_time
+        return QueryResult(dataframe=df, query=query, execution_time=execution_time, row_count=len(df), columns=df.columns.tolist())
+
+    def get_tables(self) -> List[TableInfo]:
+        table_names = self.get_table_names()
+        return [self.get_table_info(name) for name in table_names]
