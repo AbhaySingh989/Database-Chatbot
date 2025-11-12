@@ -11,7 +11,7 @@ import traceback
 import pandas as pd
 import io
 import tempfile
-from agent_handler import create_agent, get_proactive_suggestions
+from agent_handler import create_chat_agent, create_dashboarding_agent, get_proactive_suggestions
 from data_handler import load_and_combine_files
 from utils import get_llm, find_potential_common_columns
 
@@ -63,7 +63,7 @@ def get_followup_suggestions(prompt, response, df_columns, _llm):
 
 def main_ui():
     """Main UI function with clean, working implementation"""
-    st.title("🧠 DataSuperAgent Enhanced - Smart Data Analysis Assistant ✨")
+    st.title("Smart Data Analysis Assistant")
     st.caption("Upload CSV/Excel files or SQLite databases, and chat with an AI agent about your data.")
 
     # Initialize session state
@@ -283,7 +283,7 @@ def main_ui():
 
                         # Mock metadata for now, this should be improved later
                         metadata = {'columns': st.session_state.combined_df.columns.tolist()}
-                        st.session_state.agent = create_agent(st.session_state.combined_df, llm_agent_model, metadata=metadata)
+                        st.session_state.agent = create_chat_agent(st.session_state.combined_df, llm_agent_model, metadata=metadata)
 
                         if st.session_state.agent is not None:
                             st.session_state.agent_ready = True
@@ -345,15 +345,20 @@ def main_ui():
 
             if prompt:
                 st.session_state.messages.append({"role": "user", "content": prompt, "plot_path": None})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-
-                with st.chat_message("assistant"):
-                    with st.spinner("🤔 Thinking and executing..."):
-                        # ... (existing agent invocation logic)
-                        response = st.session_state.agent.invoke({"input": f"{prompt}"})
-                        final_answer = response.get("output") if isinstance(response, dict) else response
-                        st.markdown(final_answer)
+                
+                with st.spinner("🤔 Thinking and executing..."):
+                    response = st.session_state.agent.invoke(prompt)
+                    final_answer = response.get("output") if isinstance(response, dict) else response
+                    
+                    plot_path = None
+                    if os.path.exists(TEMP_PLOT_FILE):
+                        # Create a unique path for the plot to avoid being overwritten
+                        new_plot_path = os.path.join(TEMP_PLOT_DIR, f"plot_{int(time.time())}_{len(st.session_state.messages)}.png")
+                        os.rename(TEMP_PLOT_FILE, new_plot_path)
+                        plot_path = new_plot_path
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "plot_path": plot_path})
+                    st.rerun()
 
         with tab_profile:
             st.info("Generating a detailed data profile. This may take a moment for larger datasets.")
@@ -378,7 +383,7 @@ def main_ui():
                 with st.spinner("🤖 AI is designing your dashboard..."):
                     dashboard_llm = get_llm(model_name="gemini-2.0-flash", temperature=0.5)
                     metadata = {'columns': st.session_state.combined_df.columns.tolist()}
-                    st.session_state.dashboard_definition = generate_dashboard_definition(metadata, dashboard_llm)
+                    st.session_state.dashboard_definition = create_dashboarding_agent(st.session_state.combined_df, dashboard_llm, metadata)
 
             if st.session_state.dashboard_definition:
                 # Create the layout for the dashboard grid from the definition
@@ -407,9 +412,9 @@ def main_ui():
                                     else: value = st.session_state.combined_df[col].count()
                                     st.metric(label=chart.get('label', col), value=f"{value:,.2f}")
                                 elif chart_type == 'bar_chart':
-                                    st.bar_chart(data=st.session_state.combined_df, x=chart.get('x'), y=chart.get('y'))
+                                    st.bar_chart(data=st.session_state.combined_df, x=chart.get('x_axis'), y=chart.get('y_axis'))
                                 elif chart_type == 'line_chart':
-                                    st.line_chart(data=st.session_state.combined_df, x=chart.get('x'), y=chart.get('y'))
+                                    st.line_chart(data=st.session_state.combined_df, x=chart.get('x_axis'), y=chart.get('y_axis'))
                                 elif chart_type == 'table':
                                     st.dataframe(st.session_state.combined_df[chart.get('columns', [])])
                             except Exception as e:

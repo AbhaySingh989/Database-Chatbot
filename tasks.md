@@ -7,11 +7,12 @@ This is a living document that outlines the requirements and development tasks f
 **Structure:**
 
 1.  **Section 1: Requirements (User Stories):** This section describes the *why* behind the work. It is organized into **Epics**, which are high-level project goals. Each Epic contains specific **User Stories**, which describe a feature from a user's perspective. Each story is assigned a **Priority** (High, Medium, Low).
-
-2.  **Section 2: Sequential Task List:** This section describes the *how*. It provides a checklist of concrete development tasks. The tasks are grouped by Epic and should be completed in the order they are listed to ensure a stable development process.
+2.  **Section 2: Issues:** This section details identified bugs, performance problems, and other issues that need to be addressed to improve the stability and usability of the application.
+3.  **Section 3: Bug Fix and Refinement Task List:** This task list is prioritized to address the most critical bugs first, ensuring the application is stable and functional before proceeding with new feature development.
+4.  **Section 4: Feature Development Task List:** This section describes the *how* for new features. It provides a checklist of concrete development tasks. The tasks are grouped by Epic.
 
 **Development Philosophy:**
-Work should be completed in order of priority, starting with **Epic 1: Foundational Robustness & Testing**. This epic addresses the core stability and testing foundation that is essential before significant new features are added.
+Work should be completed in order of priority, starting with the **Bug Fix and Refinement Task List**. Once the application is stable, development can proceed to the **Feature Development Task List**, starting with **Epic 1: Foundational Robustness & Testing**.
 
 ---
 
@@ -127,7 +128,99 @@ As a user, I want to customize the auto-generated dashboard, so that I can tailo
 
 ---
 
-## Section 2: Sequential Task List
+### Epic 5: Advanced Agent Architecture
+
+**Goal:** To refactor the application to use a more robust and reliable multi-agent architecture, built on a custom LangGraph foundation.
+
+---
+
+**User_Story: 5.1**
+As a developer, I want a custom agent framework based on LangGraph, so that I have full control over the agent's reasoning process and can prevent hallucination.
+*Status: To Do*
+*Priority: Critical*
+
+#### Acceptance Criteria
+1.  `agent_handler.py` SHALL be rewritten from scratch to implement a `LangGraphAgent` class.
+2.  The `LangGraphAgent` class SHALL implement a ReAct-style state machine with nodes for reasoning, tool execution, and response generation.
+3.  A robust "Python REPL" tool SHALL be created for the agent to execute code against the user's dataframe.
+
+---
+
+**User_Story: 5.2**
+As a user, I want a reliable Chat Agent that can accurately answer questions about my data without hallucinating.
+*Status: To Do*
+*Priority: Critical*
+
+#### Acceptance Criteria
+1.  A "Chat Agent" SHALL be created as an instance of the `LangGraphAgent` class.
+2.  The Chat Agent SHALL be given the "Python REPL" tool as its only tool.
+3.  The Chat Agent's prompt SHALL be meticulously crafted to force it to use the tool and ground its responses in the user's data.
+
+---
+
+**User_Story: 5.3**
+As a user, I want a Dashboarding Agent that can generate insightful and relevant visualizations, not just random charts.
+*Status: To Do*
+*Priority: High*
+
+#### Acceptance Criteria
+1.  A specialized "Dashboarding Agent" SHALL be created.
+2.  The Dashboarding Agent SHALL not have any tools. Its only job is to generate a JSON dashboard definition based on a prompt.
+3.  The prompt for the Dashboarding Agent SHALL be engineered to encourage the creation of insightful and relevant visualizations.
+
+---
+
+## Section 2: Issues
+
+This section details identified bugs, performance problems, and other issues that need to be addressed to improve the stability and usability of the application.
+
+### 1. Agent Hallucination
+- **Status:** To Do
+- **Priority:** Critical
+- **Description:** The agent is not using the full dataset provided by the user. Instead, it is hallucinating a small, sample dataset and performing operations on that. This is a critical failure of the agent's reasoning process.
+- **File to Fix:** `agent_handler.py`
+
+### 2. Dashboard Generation Failure
+- **Status:** To Do
+- **Priority:** High
+- **Description:** The dashboard generation is failing because the agent is not working correctly.
+- **File to Fix:** `agent_handler.py`, `ui.py`
+
+---
+
+## Section 3: Bug Fix and Refinement Task List
+
+This task list is prioritized to address the most critical bugs first, ensuring the application is stable and functional before proceeding with new feature development.
+
+**Phase 1: LangGraph Agent Implementation**
+
+- [ ] **1. Rewrite `agent_handler.py` from Scratch**
+  - [ ] Create a new `LangGraphAgent` class that will serve as the foundation for our custom agent.
+  - [ ] This class will implement the LangGraph state machine, with nodes for tool execution, output parsing, and decision making.
+  - [ ] It will have its own custom prompts for each node.
+- [ ] **2. Create a "Python REPL" Tool**
+  - [ ] Create a new, robust tool that can execute Python code against the user's dataframe.
+  - [ ] This tool will be the primary tool for our Chat Agent.
+- [ ] **3. Build the "Chat Agent" Graph**
+  - [ ] Define the state machine for the Chat Agent using LangGraph.
+  - [ ] Create nodes for:
+      - **Reasoning:** A node that uses a prompt to decide which tool to use.
+      - **Tool Execution:** A node that executes the "Python REPL" tool.
+      - **Response Generation:** A node that generates the final response to the user.
+  - [ ] Create a meticulously crafted prompt for the reasoning node that forces the agent to use the tool and to ground its responses in the user's data.
+- [ ] **4. Create the "Dashboarding Agent"**
+  - [ ] This will be a new, specialized agent that does *not* use LangGraph. It will be a simple, single-purpose agent.
+  - [ ] Its only job is to generate a JSON dashboard definition based on a prompt.
+  - [ ] The prompt will be engineered to encourage the creation of insightful and relevant visualizations.
+- [ ] **5. Refactor `ui.py`**
+  - [ ] Update the UI to correctly call the new `LangGraphAgent` and the `create_dashboarding_agent` function.
+  - [ ] Ensure the dashboard rendering logic is robust and handles any potential errors gracefully.
+- [ ] **6. Full Codebase Review**
+  - [ ] Do a final, line-by-line review of the entire codebase to ensure there are no more lurking bugs, inconsistencies, or style issues.
+
+---
+
+## Section 4: Feature Development Task List
 
 ### Epic 1: Foundational Robustness & Testing
 **Priority: High**

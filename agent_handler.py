@@ -1,10 +1,196 @@
 import traceback
 import re
 import json
-from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain.prompts import PromptTemplate
 from typing import Dict, Any, Optional, List
-from langchain_experimental.tools import PythonREPLTool
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_experimental.tools import PythonAstREPLTool
+from langchain.tools import Tool
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated, Sequence
+import operator
+from langchain_core.messages import BaseMessage, HumanMessage
+
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+
+
+class LangGraphAgent:
+    def __init__(self, llm, df):
+        self.llm = llm
+        self.df = df
+        self.graph = self._build_graph()
+
+    def _build_graph(self):
+        graph = StateGraph(AgentState)
+        graph.add_node("agent", self._agent_node)
+        graph.add_node("tools", self._tools_node)
+        graph.set_entry_point("agent")
+        graph.add_conditional_edges(
+            "agent",
+            self._should_continue,
+            {
+                "continue": "tools",
+                "end": END,
+            },
+        )
+        graph.add_edge("tools", "agent")
+        return graph.compile()
+
+    def _should_continue(self, state):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if "tool_calls" not in last_message.additional_kwargs:
+            return "end"
+        else:
+            return "continue"
+
+    def _agent_node(self, state):
+        messages = state["messages"]
+        response = self.llm.invoke(messages)
+        return {"messages": [response]}
+
+    def _tools_node(self, state):
+        messages = state["messages"]
+        last_message = messages[-1]
+        tool_call = last_message.additional_kwargs["tool_calls"][0]
+        tool = self._get_tool(tool_call["function"]["name"])
+        response = tool.invoke(tool_call["function"]["arguments"])
+        return {"messages": [response]}
+
+    def _get_tool(self, name):
+        if name == "python_repl":
+            return PythonAstREPLTool(locals={"df": self.df})
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+    def invoke(self, query):
+        return self.graph.invoke({"messages": [HumanMessage(content=query)]})
+
+
+def create_chat_agent(_df, _llm, metadata: Optional[Dict[str, Any]] = None):
+    """Creates a conversational agent for Q&A."""
+    if _df is None or _llm is None:
+        print("🚨 Cannot create chat agent: DataFrame or LLM is missing.")
+        return None
+
+    try:
+        # Create a specialized prompt for the chat agent
+        chat_prompt = f"""
+        You are a data analysis expert. You are talking to a user who has provided you with a pandas DataFrame.
+        The user will ask you questions about the data. You have a tool that can execute Python code against the dataframe.
+        Your task is to answer the user's questions by using the Python REPL tool to analyze the data.
+
+        Here is the context of the data you are working with:
+        {create_database_context_prompt(metadata)}
+
+        Here is the head of the dataframe:
+        {_df.head().to_markdown()}
+
+        When you are asked a question, you should first think about what you need to do to answer the question.
+        Then, you should use the `python_repl` tool to execute the necessary Python code.
+        Finally, you should use the output of the tool to answer the user's question.
+
+        You MUST use the following format:
+
+        Thought: Do I need to use a tool? Yes
+        Action: The action to take. Should be one of [python_repl]
+        Action Input: The input to the action
+        Observation: The result of the action
+
+        When you have a response to say to the Human, or if you do not need to use a tool, you MUST use the format:
+
+        Thought: Do I need to use a tool? No
+        Final Answer: [your response here]
+        """
+        # Create the LangGraph agent
+        agent = LangGraphAgent(llm=_llm, df=_df)
+        
+        # Log context information
+        if metadata:
+            print(f"✅ Chat Agent created with {metadata.get('source_type', 'unknown')} context.")
+        else:
+            print(f"✅ Standard Chat Agent created.")
+
+        return agent
+
+    except Exception as e:
+        print(f"🚨 Chat Agent Creation Failed: {e}")
+        print("--- Chat Agent Creation Traceback ---")
+        print(traceback.format_exc())
+        return None
+
+
+def create_dashboarding_agent(_df, _llm, metadata: Optional[Dict[str, Any]] = None):
+    """Creates a specialized agent for generating dashboard definitions."""
+    if _df is None or _llm is None:
+        print("🚨 Cannot create dashboarding agent: DataFrame or LLM is missing.")
+        return None
+
+    try:
+        # Create a specialized prompt for dashboarding
+        columns_str = ", ".join(metadata.get('columns', []))
+        dashboard_prompt = f"""
+        You are a data visualization expert. Your task is to generate a dashboard definition in JSON format for a 12-column grid.
+        Based on the table schema with columns: [{columns_str}], define a dashboard that provides meaningful insights into the data.
+
+        Choose the best chart types from this list: ['metric', 'bar_chart', 'line_chart', 'table'].
+        For each chart, you MUST define a grid layout with 'x', 'y', 'w', and 'h' integer properties.
+        Each chart object in the JSON response must have unique keys.
+        'x' is the horizontal position (0-11). 'y' is the vertical position. 'w' is width, 'h' is height.
+        - 'metric': For KPIs. Should be small (e.g., w=3, h=1). Requires 'column' and 'expression' ('SUM', 'AVERAGE', 'COUNT').
+        - 'bar_chart': For categories. Requires 'x_axis' and 'y_axis' columns.
+        - 'line_chart': For trends. Requires 'x_axis' and 'y_axis' columns.
+        - 'table': For raw data. Requires a list of 'columns'.
+
+        Return ONLY a valid JSON object which is a list of chart definitions. Do not include any explanation.
+
+        Example JSON response:
+        ```json
+        [
+          {{
+            "type": "metric", "label": "Total Sales", "column": "sales", "expression": "SUM",
+            "x": 0, "y": 0, "w": 3, "h": 1
+          }},
+          {{
+            "type": "bar_chart", "label": "Sales by Region", "x_axis": "region", "y_axis": "sales",
+            "x": 3, "y": 0, "w": 9, "h": 2
+          }}
+        ]
+        ```
+        """
+        
+        response = _llm.invoke(dashboard_prompt)
+        content = response.content if hasattr(response, 'content') else response
+        print("LLM response for dashboard definition:")
+        print(content)
+        
+        # Clean the response to extract only the JSON part
+        # Look for a JSON block enclosed in ```json ... ```
+        match = re.search(r'```json\s*(\[.*\])\s*```', content, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback to finding the first list
+            json_str_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_str_match:
+                json_str = json_str_match.group(0)
+            else:
+                json_str = ""
+
+        if json_str:
+            dashboard_def = json.loads(json_str)
+            print("Parsed dashboard definition:")
+            print(dashboard_def)
+            return dashboard_def
+        return []
+
+    except Exception as e:
+        print(f"🚨 Dashboarding Agent Creation Failed: {e}")
+        print("--- Dashboarding Agent Creation Traceback ---")
+        print(traceback.format_exc())
+        return None
 
 
 def create_database_context_prompt(metadata: Dict[str, Any]) -> str:
@@ -62,110 +248,6 @@ def create_database_context_prompt(metadata: Dict[str, Any]) -> str:
     return "\n".join(context_parts)
 
 
-def create_enhanced_system_prompt(metadata: Optional[Dict[str, Any]] = None) -> str:
-    """Create enhanced system prompt with database context"""
-    
-    base_prompt = """You are a helpful data analysis assistant. You have access to a pandas DataFrame called 'df' that contains the user's data.
-
-IMPORTANT INSTRUCTIONS:
-1. Always use the variable name 'df' to refer to the DataFrame
-2. When creating visualizations, save plots to 'temp_plots/temp_plot.png' using matplotlib
-3. Provide clear, actionable insights about the data
-4. If asked about relationships between data, consider the schema and foreign key information provided
-5. When suggesting follow-up analyses, consider the data structure and relationships
-6. Always explain your analysis approach and findings clearly
-7. Use appropriate statistical methods and visualizations for the data type
-
-IMPORTANT NOTE ON PYTHON_REPL TOOL:
-- Each call to the 'python_repl' tool runs in a fresh, isolated Python environment.
-- You MUST include all necessary 'import' statements (e.g., 'import pandas as pd') at the beginning of EACH 'Action Input' code block.
-- Variables defined in one 'Action Input' will NOT be available in subsequent 'Action Input' calls.
-- Therefore, ensure each 'Action Input' is a complete, self-contained script to achieve the desired outcome.
-
-"""
-    
-    if metadata:
-        context_info = create_database_context_prompt(metadata)
-        if context_info:
-            base_prompt += f"\n{context_info}\n"
-            
-            # Add database-specific instructions
-            if metadata.get('source_type') == 'database':
-                base_prompt += """
-DATABASE-SPECIFIC GUIDANCE:
-- Consider table relationships when analyzing data patterns
-- If foreign keys exist, you can suggest analyses that would benefit from joining related tables
-- Be aware of the original table structure when interpreting column meanings
-- When discussing data quality, consider database constraints and relationships
-- If this data came from a custom query, be mindful that it may be a subset or transformation of the original table
-
-"""
-    
-    base_prompt += """
-TOOLS:
-You have access to the following tools:
-
-python_repl: A Python shell. Use this to execute Python commands. Input should be a valid Python command.
-
-To use a tool, use the following format:
-
-Thought: I need to use the python_repl tool to execute some Python code.
-Action: python_repl
-Action Input: print(df.head())
-Observation: ...
-
-Remember: Focus on providing valuable insights and actionable recommendations based on the data structure and content.
-"""
-    
-    return base_prompt
-
-
-def create_agent(_df, _llm, metadata: Optional[Dict[str, Any]] = None):
-    """Creates an enhanced LangChain Pandas DataFrame agent with database context awareness."""
-    if _df is None or _llm is None:
-        print("🚨 Cannot create agent: DataFrame or LLM is missing.")
-        return None
-    
-    try:
-        # Create enhanced system prompt with context
-        system_prompt = create_enhanced_system_prompt(metadata)
-        
-        # Create an instance of PythonREPLTool
-        python_repl_tool = PythonREPLTool()
-
-        # Create agent with enhanced context and explicit tool
-        agent = create_pandas_dataframe_agent(
-            llm=_llm,
-            df=_df,
-            verbose=True,
-            agent_type="zero-shot-react-description",
-            allow_dangerous_code=True,
-            prefix=system_prompt,
-            tools=[python_repl_tool] # Explicitly pass the tool
-        )
-        
-        # Log context information
-        if metadata:
-            print(f"✅ Enhanced Pandas DataFrame Agent created with {metadata.get('source_type', 'unknown')} context.")
-            if metadata.get('source_type') == 'database':
-                if 'table_name' in metadata:
-                    print(f"   📋 Table: {metadata['table_name']}")
-                if 'foreign_keys' in metadata and metadata['foreign_keys']:
-                    print(f"   🔗 Foreign Keys: {len(metadata['foreign_keys'])}")
-                if 'custom_query' in metadata:
-                    print(f"   🔍 Custom Query Source")
-        else:
-            print(f"✅ Standard Pandas DataFrame Agent created.")
-        
-        return agent
-        
-    except Exception as e:
-        print(f"🚨 Agent Creation Failed: {e}")
-        print("--- Agent Creation Traceback ---")
-        print(traceback.format_exc())
-        return None
-
-
 def get_database_suggestions(metadata: Dict[str, Any]) -> List[str]:
     """Generate database-specific analysis suggestions"""
     suggestions = []
@@ -216,6 +298,7 @@ def get_database_suggestions(metadata: Dict[str, Any]) -> List[str]:
     return suggestions[:6]  # Limit to 6 suggestions
 
 
+
 def get_proactive_suggestions(metadata: Dict[str, Any], llm) -> List[str]:
     """
     Uses an LLM to generate proactive analytical questions based on the data schema.
@@ -261,34 +344,54 @@ def generate_dashboard_definition(metadata: Dict[str, Any], llm) -> List[Dict]:
     
     Choose the best chart types from this list: ['metric', 'bar_chart', 'line_chart', 'table'].
     For each chart, you MUST define a grid layout with 'x', 'y', 'w', and 'h' integer properties.
+    Each chart object in the JSON response must have unique keys.
     'x' is the horizontal position (0-11). 'y' is the vertical position. 'w' is width, 'h' is height.
     - 'metric': For KPIs. Should be small (e.g., w=3, h=1). Requires 'column' and 'expression' ('SUM', 'AVERAGE', 'COUNT').
-    - 'bar_chart': For categories. Requires 'x' and 'y' columns.
-    - 'line_chart': For trends. Requires 'x' and 'y' columns.
+    - 'bar_chart': For categories. Requires 'x_axis' and 'y_axis' columns.
+    - 'line_chart': For trends. Requires 'x_axis' and 'y_axis' columns.
     - 'table': For raw data. Requires a list of 'columns'.
     
     Return ONLY a valid JSON object which is a list of chart definitions. Do not include any explanation.
 
     Example JSON response:
+    ```json
     [
       {{
         "type": "metric", "label": "Total Sales", "column": "sales", "expression": "SUM",
         "x": 0, "y": 0, "w": 3, "h": 1
       }},
       {{
-        "type": "bar_chart", "label": "Sales by Region", "x": "region", "y": "sales",
+        "type": "bar_chart", "label": "Sales by Region", "x_axis": "region", "y_axis": "sales",
         "x": 3, "y": 0, "w": 9, "h": 2
       }}
     ]
+    ```
     """
 
     try:
         response = llm.invoke(prompt)
         content = response.content if hasattr(response, 'content') else response
+        print("LLM response for dashboard definition:")
+        print(content)
+        
         # Clean the response to extract only the JSON part
-        json_str = re.search(r'\[.*\]', content, re.DOTALL)
+        # Look for a JSON block enclosed in ```json ... ```
+        match = re.search(r'```json\s*(\[.*\])\s*```', content, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback to finding the first list
+            json_str_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_str_match:
+                json_str = json_str_match.group(0)
+            else:
+                json_str = ""
+
         if json_str:
-            return json.loads(json_str.group(0))
+            dashboard_def = json.loads(json_str)
+            print("Parsed dashboard definition:")
+            print(dashboard_def)
+            return dashboard_def
         return []
     except (json.JSONDecodeError, AttributeError) as e:
         print(f"Error parsing dashboard definition from LLM: {e}")

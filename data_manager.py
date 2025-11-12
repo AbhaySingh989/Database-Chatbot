@@ -647,8 +647,6 @@ def generate_profile_report(df: pd.DataFrame, title: str = "Data Profile Report"
             title=title,
             minimal=True,  # Use minimal mode for performance in a web app
             explorative=True,
-            dark_mode=True,
-            orange_mode=True,
         )
         return profile
     except Exception as e:

@@ -64,7 +64,7 @@ def initialize_application():
         
         # Initialize enhanced agent handler
         try:
-            from agent_handler import create_agent
+            from agent_handler import create_chat_agent, create_dashboarding_agent
         except ImportError as e:
             st.error(f"Failed to import agent handler: {e}")
             st.stop()
